@@ -1,4 +1,4 @@
-name: Build Android (Web → Capacitor)
+name: Build Android (My Style)
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -22,9 +22,15 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Install Android SDK
+      - name: Install dependencies
+        run: |
+          npm install -g @capacitor/cli
+          npm install
+          npm install @capacitor/core @capacitor/android --save
+
+      - name: Setup Android SDK
         run: |
           sudo mkdir -p /usr/local/lib/android/sdk/cmdline-tools
           cd /usr/local/lib/android/sdk/cmdline-tools
@@ -38,17 +44,15 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "platform-tools" "build-tools;35.0.0" "platforms;android-35"
 
-      - name: Build Android App
+      - name: Build Android APK
         run: |
-          npm install -g @capacitor/cli
-          npm install
           npx cap init "My Style" com.ohamed12.mystyle --web-dir=dist || true
           npx cap add android || true
-          npx cap copy android
+          npx cap sync android
           cd android
           ./gradlew assembleDebug
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: MyStyle-APK
