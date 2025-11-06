@@ -1,0 +1,97 @@
+name: Build Android (Cordova / Web -> Capacitor)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install global tools
+        run: |
+          npm install -g cordova @capacitor/cli
+
+      - name: Install Android SDK components
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: default
+          arch: x86_64
+          force-avd-creation: false
+
+      - name: Show Node / Java / Gradle
+        run: |
+          node -v
+          java -version
+          gradle -v || echo "gradle wrapper may be used"
+
+      - name: Build (Cordova if present, otherwise Web -> Capacitor)
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: |
+          set -e
+          echo "Workspace: $(pwd)"
+          # If Cordova android platform exists -> build with cordova
+          if [ -d "platforms/android" ]; then
+            echo "Detected Cordova android platform. Building with Cordova..."
+            npm ci || npm install || true
+            # try to build release then debug if fails
+            cordova build android --release || cordova build android --debug
+          else
+            echo "No Cordova android found. Trying web build + Capacitor..."
+            # build web
+            if [ -f package.json ]; then
+              npm ci || npm install || true
+              # try common build scripts
+              if npm run build --if-present; then
+                echo "Web build done"
+              else
+                echo "No web build script or it failed — continuing anyway"
+              fi
+            fi
+
+            # initialize capacitor if necessary (id and app name)
+            # NOTE: adjust appId if you want a different one
+            npx cap init my-style com.ohamed12.mystyle --web-dir=dist || true
+
+            # add android platform and copy web assets
+            npx cap add android || true
+            npx cap copy android || true
+
+            # build using Gradle wrapper (inside android folder)
+            if [ -d "android" ]; then
+              cd android
+              ./gradlew assembleDebug || ./gradlew assembleRelease || true
+              cd ..
+            else
+              echo "android folder not found after capacitor add"
+            fi
+          fi
+
+      - name: Find APKs
+        run: |
+          echo "Looking for APK files..."
+          find . -type f -name "*.apk" -print || true
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            **/*.apk
