@@ -33,7 +33,7 @@ jobs:
       - name: Build web assets (create dist folder)
         run: |
           mkdir -p dist
-          echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>My Style</title></head><body><h1>Hello from My Style App 🌸</h1></body></html>" > dist/index.html
+          echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>My Style</title></head><body><h1>Welcome to My Style 💅</h1></body></html>" > dist/index.html
 
       - name: Setup Android SDK
         run: |
@@ -49,13 +49,17 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "platform-tools" "build-tools;35.0.0" "platforms;android-35"
 
+      - name: Fix Gradle Java version
+        run: |
+          echo "org.gradle.java.home=/usr/lib/jvm/temurin-17-jdk-amd64" >> android/gradle.properties
+
       - name: Build Android APK
         run: |
           npx cap init "My Style" com.ohamed12.mystyle --web-dir=dist || true
           npx cap add android || true
           npx cap sync android
           cd android
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
