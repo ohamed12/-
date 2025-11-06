@@ -49,15 +49,18 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "platform-tools" "build-tools;35.0.0" "platforms;android-35"
 
+      - name: Create Android project
+        run: |
+          npx cap init "My Style" com.ohamed12.mystyle --web-dir=dist || true
+          npx cap add android || true
+          npx cap sync android
+
       - name: Fix Gradle Java version
         run: |
           echo "org.gradle.java.home=/usr/lib/jvm/temurin-17-jdk-amd64" >> android/gradle.properties
 
       - name: Build Android APK
         run: |
-          npx cap init "My Style" com.ohamed12.mystyle --web-dir=dist || true
-          npx cap add android || true
-          npx cap sync android
           cd android
           ./gradlew assembleDebug --stacktrace
 
