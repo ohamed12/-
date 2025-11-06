@@ -1,4 +1,4 @@
-name: Build Android (Cordova / Web -> Capacitor)
+name: Build Android (Web → Capacitor)
 
 on:
   push:
@@ -6,12 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -19,51 +24,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Install global tools
+      - name: Install Android SDK
         run: |
-          npm install -g cordova @capacitor/cli
-
-      - name: Install Android SDK (fixed)
-        run: |
-          set -e
           sudo mkdir -p /usr/local/lib/android/sdk/cmdline-tools
           cd /usr/local/lib/android/sdk/cmdline-tools
           sudo apt-get update -qq
           sudo apt-get install -y wget unzip
           wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O tools.zip
-          unzip tools.zip -d temp
-          mkdir -p latest
-          mv temp/cmdline-tools/* latest/ || true
-          rm -rf temp tools.zip
+          unzip tools.zip -d latest
+          rm tools.zip
           export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
           export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "platform-tools" "build-tools;35.0.0" "platforms;android-35"
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "build-tools;35.0.0" "platforms;android-35"
 
-      - name: Build (Cordova if present, otherwise Web -> Capacitor)
+      - name: Build Android App
         run: |
-          set -e
-          if [ -d "platforms/android" ]; then
-            npm install
-            cordova build android --debug
-          else
-            npm install
-            npm run build || true
-            npx cap init MyStyle com.ohamed12.mystyle --web-dir=dist || true
-            npx cap add android || true
-            npx cap copy android || true
-            cd android
-            ./gradlew assembleDebug
-            cd ..
-          fi
+          npm install -g @capacitor/cli
+          npm install
+          npx cap init "My Style" com.ohamed12.mystyle --web-dir=dist || true
+          npx cap add android || true
+          npx cap copy android
+          cd android
+          ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: MyStyle-APK
-          path: "**/*.apk"
+          path: android/app/build/outputs/apk/debug/app-debug.apk
