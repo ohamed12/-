@@ -1,4 +1,4 @@
-name: Build Android (My Style)
+name: Build MyStyle Android App
 
 on:
   push:
@@ -29,6 +29,11 @@ jobs:
           npm install -g @capacitor/cli
           npm install
           npm install @capacitor/core @capacitor/android --save
+
+      - name: Build web assets (create dist folder)
+        run: |
+          mkdir -p dist
+          echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>My Style</title></head><body><h1>Hello from My Style App 🌸</h1></body></html>" > dist/index.html
 
       - name: Setup Android SDK
         run: |
