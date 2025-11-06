@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Copy of MyStyle.",
+  "description": "A professional, interactive app for customized clothing sales. Users can design and order personalized clothes by choosing the fabric type, clothing style, color, and an AI-generated or uploaded printed design.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
