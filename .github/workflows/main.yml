@@ -1,4 +1,4 @@
-name: Build Android App (with SDK tools)
+name: Build Android App (commandline tools)
 
 on:
   push:
@@ -6,7 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk   # نثبت SDK هنا داخل كل تشغيل
+  # مهم: نضع التعبير داخل اقتباس لتجنب خطأ YAML
+  ANDROID_SDK_ROOT: '${{ runner.temp }}/android-sdk'
 
 jobs:
   build-android:
@@ -36,31 +37,30 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
-      - name: Build web assets (if project has build script)
+      - name: Build web assets (if any)
         run: |
-          if [ -f package.json ] && grep -q '"build"' package.json; then
+          # لو عندك سكربت build في package.json نشغله
+          if [ -f package.json ] && grep -q "\"build\"" package.json; then
             npm run build
           fi
-          # If no dist but there's www, copy it
+          # لو لم يوجد مجلد dist، ووجد www (cordova-style) نسخة
           if [ ! -d ./dist ] && [ -d ./www ]; then
             cp -a www dist
           fi
 
-      # ----- Install Android commandlinetools and SDK components -----
-      - name: Install Android commandline tools
+      - name: Install Android command line tools
         run: |
           set -e
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          echo "Using ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" "${ANDROID_SDK_ROOT}/platform-tools"
           cd "${ANDROID_SDK_ROOT}"
-          # download latest commandline tools (link may update in future)
           curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o cmdline-tools.zip
           unzip -q cmdline-tools.zip -d cmdline-tools
-          # some zips extract into "cmdline-tools" or "tools", normalize to 'latest'
+          # normalize directory to cmdline-tools/latest
           if [ -d cmdline-tools/cmdline-tools ]; then
-            mv cmdline-tools/cmdline-tools cmdline-tools/latest
+            mv -f cmdline-tools/cmdline-tools cmdline-tools/latest
           else
-            mv cmdline-tools cmdline-tools/latest || true
+            mv -f cmdline-tools cmdline-tools/latest || true
           fi
           rm -f cmdline-tools.zip
 
@@ -69,47 +69,47 @@ jobs:
           echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${ANDROID_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
           echo "${ANDROID_SDK_ROOT}/tools/bin" >> $GITHUB_PATH || true
-          # ensure sdkmanager is runnable
           ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" || true
 
-      - name: Install Android SDK components (platform-tools, build-tools, platforms)
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+      - name: Install Android SDK components and accept licenses
         run: |
           set -e
-          # wait a little to ensure PATH updated
           sdkmanager --version
-          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses
+          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses || true
+          # عدّل رقم الـ android-xx و build-tools حسب حاجتك
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Verify Android platform installed
+      - name: Verify SDK
         run: |
-          echo "SDK root: ${ANDROID_SDK_ROOT}"
+          echo "Listing platforms:"
           ls -la "${ANDROID_SDK_ROOT}/platforms" || true
-          adb --version || true
+          echo "platform-tools:"
+          ls -la "${ANDROID_SDK_ROOT}/platform-tools" || true
 
-      # ----- Capacitor/Cordova Android sync (optional) -----
-      - name: Add / Sync Android (Capacitor)
-        if: exists('capacitor.config.json') || exists('capacitor.config.ts')
+      - name: Prepare Android project (Cordova / Capacitor)
         run: |
-          npm install @capacitor/android --no-audit --no-fund || true
-          npx cap add android || true
-          npx cap sync android || true
+          # حاول نضيف أو نزامن الـ android إذا كان مشروع Capacitor
+          if [ -f capacitor.config.json ] || [ -f capacitor.config.ts ]; then
+            npm install @capacitor/android --no-audit --no-fund || true
+            npx cap add android || true
+            npx cap sync android || true
+          fi
+          # لو مشروع Cordova حاول تحديث المنصة
+          if [ -d "platforms/android" ]; then
+            echo "Found platforms/android (Cordova style)"
+          fi
 
-      # ----- Build APK -----
-      - name: Build APK (Gradle)
+      - name: Build APK with Gradle
         run: |
           set -e
-          # find android project folder
+          # تحديد مجلد android الصحيح
           if [ -d "android" ]; then
             cd android
           elif [ -d "platforms/android" ]; then
             cd platforms/android
-          elif [ -d "app" ] && [ -f "gradlew" ]; then
-            # already in android-like tree
-            :
           else
-            echo "❌ لم يتم العثور على مشروع Android (android/ أو platforms/android)."
+            echo "❌ Cannot find Android project folder (android/ or platforms/android/)."
+            echo "Make sure your repo includes the Android platform (Capacitor/Cordova) or adjust workflow."
             exit 1
           fi
 
