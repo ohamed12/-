@@ -1,91 +1,115 @@
-name: Build Android APK (create android on runner)
+name: Build Android APK (Capacitor)
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
 
     env:
-      # إعداد آمن لمكان SDK داخل الـ runner
+      NODE_VERSION: 18
+      JAVA_VERSION: 17
+      ANDROID_API_LEVEL: 33
+      BUILD_TOOLS_VERSION: "33.0.2"
+      # مسار SDK مؤقت داخل الـ runner
       ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install npm deps
-        run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Build web assets (if build script exists)
-        run: |
-          if grep -q "\"build\"" package.json >/dev/null 2>&1; then
-            npm run build || echo "build failed or not required, continuing"
-          else
-            echo "no build script; continuing"
-          fi
+    - name: Ensure npm installed (debug)
+      run: |
+        node -v
+        npm -v || true
 
-      - name: Install Capacitor (if not present) and add android platform
-        run: |
-          # make sure @capacitor/core & cli exist locally
-          if ! [ -d node_modules/@capacitor/core ]; then
-            npm install @capacitor/core @capacitor/cli --no-audit --no-fund
-          fi
-          npm install @capacitor/android --no-audit --no-fund || true
-          # Init only if not initialized
-          if ! [ -f capacitor.config.json ] && ! [ -f capacitor.config.ts ]; then
-            npx cap init "MyStyle" "com.example.mystyle" || true
-          fi
-          npx cap add android || npx cap sync android || true
+    - name: Install Android commandlinetools
+      run: |
+        mkdir -p "${ANDROID_SDK_ROOT}"
+        cd "${ANDROID_SDK_ROOT}"
+        # download commandline tools (قد يتغير رقم الإصدار لاحقًا — إن حدث خطأ حدث التحديث)
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
+        unzip -q cmdline-tools.zip -d cmdline-tools-temp
+        mkdir -p cmdline-tools/latest
+        # داخل zip توجد مجلدات مثل cmdline-tools؛ ننقل محتوياته للنسق المطلوب
+        mv cmdline-tools-temp/cmdline-tools/* cmdline-tools/latest/
+        rm -rf cmdline-tools.zip cmdline-tools-temp
+        export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
+        sdkmanager --version
 
-      - name: Install Android commandline tools & SDK components
-        run: |
-          set -e
-          mkdir -p "$ANDROID_SDK_ROOT"
-          cd "$ANDROID_SDK_ROOT"
-          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o cmdline.zip
-          unzip -q cmdline.zip -d cmdline-tools-temp
-          mkdir -p cmdline-tools/latest
-          mv cmdline-tools-temp/cmdline-tools/* cmdline-tools/latest/ || true
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-          # accept licenses and install essentials
-          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+    - name: Install Android SDK packages
+      env:
+        ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+        PATH: ${{ env.PATH }}:${{ env.ANDROID_SDK_ROOT }}/platform-tools:${{ env.ANDROID_SDK_ROOT }}/cmdline-tools/latest/bin
+      run: |
+        yes | sdkmanager --licenses
+        sdkmanager "platform-tools" "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${BUILD_TOOLS_VERSION}"
 
-      - name: Show debug info
-        run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          node -v
-          npm -v
-          ls -la android || echo "android dir not present yet"
+    - name: Show Android env (debug)
+      run: |
+        echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+        ls -la "${ANDROID_SDK_ROOT}" || true
+        sdkmanager --list || true
 
-      - name: Prepare Android (Capacitor sync)
-        run: |
-          # ensure webDir is copied to Android if capacitor used
-          if [ -f capacitor.config.json ] || [ -f capacitor.config.ts ]; then
-            npx cap copy android || npx cap sync android || true
-          fi
+    - name: Install npm deps (fallback to npm install if no lockfile)
+      run: |
+        if [ -f package-lock.json ]; then
+          npm ci
+        else
+          npm install
+        fi
 
-      - name: Build Android APK (Gradle)
-        working-directory: android
-        run: |
-          chmod +x ./gradlew || true
-          ./gradlew assembleDebug --no-daemon
+    - name: Build web assets
+      run: |
+        # هذا يفترض أنك تملك سكربت `build` في package.json
+        npm run build
 
-      - name: Upload APK
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apk
-          path: android/app/build/outputs/**/*.apk
+    - name: Ensure Capacitor Android platform exists
+      run: |
+        # نصب @capacitor/android إن لم يكن منصبًا
+        if ! grep -q "@capacitor/android" package.json 2>/dev/null; then
+          npm install @capacitor/android --save-dev
+        fi
+
+        # إذا ليس هناك مجلد android (يعني المنصة لم تضاف) نضيفها
+        if [ ! -d android ]; then
+          npx cap add android
+        fi
+
+        # sync assets (ينقل build/dist إلى مشروع android)
+        npx cap sync android
+
+    - name: Build Android APK (Gradle)
+      env:
+        ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+        ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        PATH: ${{ env.PATH }}:${{ env.ANDROID_SDK_ROOT }}/platform-tools:${{ env.ANDROID_SDK_ROOT }}/cmdline-tools/latest/bin
+      run: |
+        cd android
+        # إذا كان gradlew غير قابل للتنفيذ، نجعله كذلك
+        chmod +x ./gradlew || true
+        # بناء نسخة debug
+        ./gradlew assembleDebug --no-daemon --stacktrace
+
+    - name: Upload APK artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-apk
+        path: android/app/build/outputs/apk/debug/*.apk
