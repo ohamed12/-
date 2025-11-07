@@ -6,63 +6,54 @@ on:
   workflow_dispatch:
 
 env:
-  # تهيئة Android SDK path لما يستخدمه runner
+  # مكان الـ SDK الذي سنستخدمه على الـ runner
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
   ANDROID_HOME: /usr/local/lib/android/sdk
 
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
 
     steps:
-      # 1) احصل على الكود
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2) Java 17 (يوفّر JAVA_HOME تلقائياً)
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3) Node (لتجميع أصول الويب)
-      - name: Setup Node.js
+      - name: Show Java info
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+
+      - name: Setup Node.js (no cache to avoid lockfile requirement)
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
+          cache: 'none'
 
-      # 4) Cache Gradle wrapper & .gradle
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-cache-${{ runner.os }}-
-
-      # 5) Install npm deps
-      - name: Install npm dependencies
-        run: |
-          npm ci
-
-      # 6) Build web assets (or copy www to dist if using Cordova)
-      - name: Build web assets (dist) or copy from www
+      - name: Install npm dependencies (use npm ci if lockfile exists)
         run: |
           set -e
-          # ضع هنا أمر البناء الحقيقي لمشروعك إن كان مختلفًا (مثال: npm run build)
+          if [ -f package-lock.json ]; then
+            echo "Using npm ci (package-lock.json found)"
+            npm ci
+          else
+            echo "No lockfile found — using npm install"
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Build web assets (dist) or copy from www (Cordova)
+        run: |
+          set -e
           if [ -f package.json ] && grep -q "\"build\"" package.json; then
             echo "Running npm run build..."
             npm run build
           fi
 
-          # إذا لم يُنشئ build مجلد dist ولكن يوجد www (Cordova) فنسخه
           if [ ! -d "./dist" ]; then
             if [ -d "./www" ]; then
               echo "dist not found — copying www -> dist"
@@ -77,88 +68,74 @@ jobs:
             echo "Found dist directory."
           fi
 
-      # 7) Ensure Android SDK tools exist (use the runner's sdkmanager if available,
-      #    otherwise install commandlinetools fallback). On ubuntu-latest sdkmanager exists.
-      - name: Install Android SDK components
+      - name: Install Android SDK components and accept licenses
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           set -e
-          # Ensure sdkmanager is available
+          # ensure sdkmanager exists (ubuntu hosted runner has it)
           if ! command -v sdkmanager >/dev/null 2>&1; then
-            echo "sdkmanager not found in PATH, trying default locations..."
+            echo "sdkmanager not found — trying to install commandlinetools (this runner usually has sdkmanager)"
+            # Normally ubuntu-latest already has sdkmanager; if not, this step may require custom logic.
           fi
 
           yes | sdkmanager --sdk_root=${ANDROID_SDK_ROOT} --licenses || true
 
-          # Install minimal required components (change API level if تحتاج)
           sdkmanager --sdk_root=${ANDROID_SDK_ROOT} "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-          # verify
-          echo "Android SDK installed under: ${ANDROID_SDK_ROOT}"
+          echo "SDK platforms:"
           ls -la ${ANDROID_SDK_ROOT}/platforms || true
           ls -la ${ANDROID_SDK_ROOT}/build-tools || true
 
-      # 8) Add Android SDK tools to PATH for Gradle
-      - name: Add Android tools to PATH
+      - name: Add Android SDK tools to PATH
         run: |
-          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}"
           echo "${ANDROID_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
-          echo "${ANDROID_SDK_ROOT}/tools/bin" >> $GITHUB_PATH
+          echo "${ANDROID_SDK_ROOT}/tools/bin" >> $GITHUB_PATH || true
           echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH || true
 
-      # 9) Ensure capacitor/android or android platform is present (attempt to add if needed)
-      - name: Ensure Android platform exists in project
+      - name: Ensure Capacitor/Cordova Android platform exists
         run: |
           set -e
-          # إذا تستخدم Capacitor:
-          if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ]; then
-            echo "Capacitor project detected."
-            # تثبيت منصة أندرويد إن لم تكن موجودة
+          if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ] || [ -f "capacitor.config.js" ]; then
+            echo "Capacitor detected."
             if [ ! -d "android" ]; then
               echo "Adding @capacitor/android..."
               npm install @capacitor/android --no-audit --no-fund
               npx cap add android || true
-            fi
-          else
-            # Cordova fallback: تأكد من وجود مجلد platforms/android
-            if [ -d "platforms/android" ] || [ -d "android" ]; then
-              echo "Cordova/Android platform exists."
             else
-              echo "No Capacitor or Cordova Android platform found. If you use Cordova, run: cordova platform add android"
-              # لا نفشل هنا نهائياً — لكن البناء سيفشل لاحقًا إن لم توجد منصة.
+              echo "android folder exists."
+            fi
+            npx cap sync android || true
+          else
+            if [ -d "platforms/android" ]; then
+              echo "Cordova android platform found."
+            else
+              echo "Warning: No Capacitor config and no Cordova android found. Build may fail."
             fi
           fi
           ls -la
 
-      # 10) Build APK with Gradle
       - name: Build debug APK with Gradle
         run: |
           set -e
-          # تأكد أن هنالك مجلد android (Capacitor) أو platforms/android (Cordova)
           if [ -d "android" ]; then
             cd android
           elif [ -d "platforms/android" ]; then
             cd platforms/android
           else
-            echo "Error: could not find 'android' folder. Ensure android platform was added."
+            echo "Error: could not find 'android' folder. Ensure platform was added."
             exit 1
           fi
 
-          # اجعل gradlew قابلًا للتنفيذ إن وُجد
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
-            echo "Using gradlew from $(pwd)"
-            echo "JAVA_HOME=${JAVA_HOME}"
             ./gradlew assembleDebug --no-daemon --stacktrace
           else
-            # إذا لم يوجد gradlew فاستخدم gradle من PATH (قد لا يكون متوفر)
-            echo "gradlew not found — trying gradle from PATH"
+            echo "gradlew not found — attempting system gradle (may not be installed)"
             gradle assembleDebug --no-daemon --stacktrace
           fi
 
-      # 11) Upload the produced APK (adjust path if your project outputs elsewhere)
-      - name: Upload debug APK
+      - name: Upload debug APK artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
