@@ -1,4 +1,4 @@
-name: Build Android (Capacitor / Cordova / Gradle)
+name: Build Android (try add platform if missing)
 
 on:
   push:
@@ -25,75 +25,67 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install dependencies
+      - name: Install npm deps
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
-      - name: Build web assets (if script exists)
+      - name: Build web assets if exists
         run: |
           if grep -q "\"build\"" package.json >/dev/null 2>&1; then
-            npm run build || echo "build script failed or not necessary"
+            npm run build || echo "npm run build failed or not present"
           else
             echo "no build script"
           fi
 
-      - name: Set ANDROID_SDK_ROOT in env
+      - name: Set ANDROID_SDK_ROOT
         run: echo "ANDROID_SDK_ROOT=$RUNNER_TEMP/android-sdk" >> $GITHUB_ENV
 
-      - name: Install Android commandline tools & SDK components
+      - name: Install Android commandline tools & SDK
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT"
-          cd "$ANDROID_SDK_ROOT"
-
-          CLI_ZIP=cmdline-tools.zip
-          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o $CLI_ZIP
-          unzip -q $CLI_ZIP -d cmdline-tools-temp || (echo "unzip failed" && exit 1)
-          mkdir -p cmdline-tools
-          mv cmdline-tools-temp/cmdline-tools cmdline-tools/latest || true
-
+          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools-temp"
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          mv "$ANDROID_SDK_ROOT/cmdline-tools-temp/cmdline-tools"/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Ensure Android platform exists (Capacitor / Cordova) and prepare project
+      - name: Try to add Android platform if missing
         run: |
           set -e
-          # If android dir exists already, keep it
           if [ -d "./android" ]; then
-            echo "android directory exists, skipping add."
-          else
-            echo "android directory NOT found. Trying to add platform..."
-
-            # If Capacitor detected in node_modules or package.json deps, use Capacitor
-            if [ -d "node_modules/@capacitor/core" ] || grep -q "\"@capacitor/core\"" package.json >/dev/null 2>&1; then
-              echo "Detected Capacitor. Adding Android platform..."
-              npx cap add android || npx cap sync android || (echo "Capacitor add/sync failed" && exit 1)
-
-            # Else if Cordova config.xml exists, try Cordova
-            elif [ -f "config.xml" ] || grep -q "\"cordova\"" package.json >/dev/null 2>&1; then
-              echo "Detected Cordova. Adding Android platform..."
-              npx cordova platform add android || ionic cordova platform add android || (echo "Cordova add failed" && exit 1)
-
-            else
-              echo "No Capacitor or Cordova detected and no android dir. Cannot continue." >&2
-              exit 1
-            fi
+            echo "android directory exists; skipping add."
+            exit 0
           fi
 
-      - name: Show Android env (debug)
+          # Detect Capacitor
+          if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ] || grep -q "\"@capacitor/core\"" package.json >/dev/null 2>&1; then
+            echo "Capacitor project detected. Installing platform..."
+            npm install @capacitor/android --no-save || true
+            npx cap add android || npx cap sync android || (echo "Capacitor add/sync failed" && exit 1)
+            exit 0
+          fi
+
+          # Detect Cordova
+          if [ -f "config.xml" ] || grep -q "\"cordova\"" package.json >/dev/null 2>&1; then
+            echo "Cordova project detected. Installing platform..."
+            npm install -g cordova || true
+            npx cordova platform add android || (echo "Cordova add failed" && exit 1)
+            exit 0
+          fi
+
+          echo "No Capacitor/Cordova detected and android dir missing. Cannot continue." >&2
+          exit 1
+
+      - name: Show android dir (debug)
         run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           ls -la || true
           ls -la android || true
 
-      - name: Build Android APK (Gradle)
+      - name: Build Android APK
         run: |
           set -e
           if [ -d "android" ]; then
