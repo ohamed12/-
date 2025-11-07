@@ -1,55 +1,84 @@
-name: Android Build Test
+name: Android Build (Capacitor/Cordova)
 
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      ANDROID_SDK_ROOT: "${{ runner.temp }}/android-sdk"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
-          java-version: "17"
+          distribution: temurin
+          java-version: '17'
 
-      - name: Setup Node.js
+      - name: Setup Node 18
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: '18'
 
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Build web
-        run: npm run build || echo "no web build"
-
-      - name: Install Android SDK
+      - name: Install repo dependencies (use lockfile if present)
         run: |
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build web assets (if any)
+        run: |
+          if [ -f package.json ]; then
+            npm run build || echo "no build or build failed but continuing"
+          fi
+
+      - name: Set ANDROID_SDK_ROOT to runner temp (safe)
+        run: echo "ANDROID_SDK_ROOT=$RUNNER_TEMP/android-sdk" >> $GITHUB_ENV
+
+      - name: Install Android command-line tools & SDK components
+        run: |
+          set -e
+          mkdir -p "$ANDROID_SDK_ROOT"
           cd "$ANDROID_SDK_ROOT"
-          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o tools.zip
-          unzip -q tools.zip -d cmdline-tools
-          mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
+
+          # Download commandline tools (Linux)
+          CLI_ZIP=commandlinetools-linux.zip
+          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o $CLI_ZIP
+
+          # unzip
+          unzip -q $CLI_ZIP -d cmdline-tools-temp
+          # Move to expected layout: cmdline-tools/latest
+          mkdir -p cmdline-tools
+          mv cmdline-tools-temp/cmdline-tools cmdline-tools/latest || true
+
+          # Add sdkmanager to PATH for following steps
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          yes | sdkmanager --licenses || true
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-      - name: Build APK
+          # Accept licenses & install basic components (platform-tools, platform, build-tools)
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Show Android env (debug)
         run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_SDK_ROOT" || true
 
-      - name: Upload APK
+      - name: Build Android APK (Gradle)
+        working-directory: android
+        run: |
+          chmod +x ./gradlew || true
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: app-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
