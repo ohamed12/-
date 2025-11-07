@@ -5,12 +5,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
-  APP_NAME: "My Style"
-  APP_ID: "com.ohamed12.mystyle"
-  WEB_DIR: "dist"
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,44 +28,53 @@ jobs:
         run: |
           npm ci || npm install
 
-      - name: Build web assets
+      - name: Build web assets (create minimal dist if none)
         run: |
           if npm run | grep -q " build"; then
             npm run build
           else
-            mkdir -p $WEB_DIR
-            echo "<!doctype html><html><meta charset='utf-8'><title>My Style</title><body><h1>Welcome to My Style 💅</h1></body></html>" > $WEB_DIR/index.html
+            mkdir -p dist
+            echo "<!doctype html><html><meta charset='utf-8'><title>My Style</title><body><h1>My Style</h1></body></html>" > dist/index.html
           fi
 
-      - name: Install Android SDK
+      - name: Install Android SDK commandline tools and platforms
         run: |
+          ANDROID_SDK_ROOT="${{ runner.temp }}/android-sdk"
           mkdir -p "$ANDROID_SDK_ROOT"
           cd "$ANDROID_SDK_ROOT"
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O tools.zip
           unzip -q tools.zip -d cmdline-tools
           rm tools.zip
-          mv cmdline-tools cmdline-tools/latest
-          export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin
+          # move to expected path
+          mkdir -p cmdline-tools/latest
+          mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
+          export PATH="$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools"
           yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        shell: bash
 
-      - name: Prepare Android project
+      - name: Prepare Capacitor Android project
         run: |
+          # اسم التطبيق والمعرف (عدّل إذا شئت)
+          APP_NAME="My Style"
+          APP_ID="com.ohamed12.mystyle"
+          WEB_DIR="dist"
+
           npm install -g @capacitor/cli
           npm install @capacitor/core @capacitor/android --save
+
+          # تهيئة/مزامنة المشروع (إذا لم يكن موجوداً)
           npx cap init "$APP_NAME" "$APP_ID" --web-dir="$WEB_DIR" || true
           npx cap add android || true
           npx cap sync android
+        shell: bash
 
-      - name: Fix Gradle config
-        run: |
-          echo "org.gradle.java.home=${JAVA_HOME}" >> android/gradle.properties
-
-      - name: Build APK
+      - name: Ensure gradlew is executable and build debug APK
         run: |
           cd android
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
+        shell: bash
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
