@@ -1,18 +1,16 @@
-name: Build Android App (commandline tools)
+name: Build Android (Capacitor)
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  # مهم: نضع التعبير داخل اقتباس لتجنب خطأ YAML
-  ANDROID_SDK_ROOT: '${{ runner.temp }}/android-sdk'
-
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    env:
+      # مسار SDK مؤقت داخل runner
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
 
     steps:
       - name: Checkout repository
@@ -21,106 +19,68 @@ jobs:
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '17'
+          cache: gradle
 
       - name: Setup Node.js 18
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
 
-      - name: Install npm dependencies
+      - name: Install npm dependencies (ci if lockfile exists)
         run: |
           if [ -f package-lock.json ]; then
             npm ci
           else
-            npm install --no-audit --no-fund
+            npm install
           fi
 
-      - name: Build web assets (if any)
+      - name: Build web assets
         run: |
-          # لو عندك سكربت build في package.json نشغله
-          if [ -f package.json ] && grep -q "\"build\"" package.json; then
-            npm run build
-          fi
-          # لو لم يوجد مجلد dist، ووجد www (cordova-style) نسخة
-          if [ ! -d ./dist ] && [ -d ./www ]; then
-            cp -a www dist
-          fi
+          # عدّل هذا الأمر إذا build script عندك باسم مختلف
+          npm run build
+        # لو ملفات الويب تخرج في مجلد مختلف غيّر webDir في capacitor.config أو غيّر المسار أدناه
 
-      - name: Install Android command line tools
+      - name: Setup Android SDK and tools
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          target: default
+          components: |
+            platform-tools
+            cmdline-tools;latest
+            build-tools;33.0.2
+            platforms;android-33
+
+      - name: Ensure sdkmanager is available
         run: |
-          set -e
-          echo "Using ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
-          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" "${ANDROID_SDK_ROOT}/platform-tools"
-          cd "${ANDROID_SDK_ROOT}"
-          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o cmdline-tools.zip
-          unzip -q cmdline-tools.zip -d cmdline-tools
-          # normalize directory to cmdline-tools/latest
-          if [ -d cmdline-tools/cmdline-tools ]; then
-            mv -f cmdline-tools/cmdline-tools cmdline-tools/latest
-          else
-            mv -f cmdline-tools cmdline-tools/latest || true
-          fi
-          rm -f cmdline-tools.zip
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_SDK_ROOT" || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --version || true
 
-      - name: Add Android SDK tools to PATH
+      - name: Accept Android SDK licenses
         run: |
-          echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "${ANDROID_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
-          echo "${ANDROID_SDK_ROOT}/tools/bin" >> $GITHUB_PATH || true
-          ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" || true
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
-      - name: Install Android SDK components and accept licenses
+      - name: Sync Capacitor Android (or add platform)
         run: |
-          set -e
-          sdkmanager --version
-          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses || true
-          # عدّل رقم الـ android-xx و build-tools حسب حاجتك
-          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          # لو تستخدم Cordova غيّر هذه الأوامر
+          npx cap sync android
 
-      - name: Verify SDK
+      - name: Build Android APK (Gradle)
+        working-directory: android
         run: |
-          echo "Listing platforms:"
-          ls -la "${ANDROID_SDK_ROOT}/platforms" || true
-          echo "platform-tools:"
-          ls -la "${ANDROID_SDK_ROOT}/platform-tools" || true
-
-      - name: Prepare Android project (Cordova / Capacitor)
-        run: |
-          # حاول نضيف أو نزامن الـ android إذا كان مشروع Capacitor
-          if [ -f capacitor.config.json ] || [ -f capacitor.config.ts ]; then
-            npm install @capacitor/android --no-audit --no-fund || true
-            npx cap add android || true
-            npx cap sync android || true
-          fi
-          # لو مشروع Cordova حاول تحديث المنصة
-          if [ -d "platforms/android" ]; then
-            echo "Found platforms/android (Cordova style)"
-          fi
-
-      - name: Build APK with Gradle
-        run: |
-          set -e
-          # تحديد مجلد android الصحيح
-          if [ -d "android" ]; then
-            cd android
-          elif [ -d "platforms/android" ]; then
-            cd platforms/android
-          else
-            echo "❌ Cannot find Android project folder (android/ or platforms/android/)."
-            echo "Make sure your repo includes the Android platform (Capacitor/Cordova) or adjust workflow."
-            exit 1
-          fi
-
+          # تأكد أن الملف gradlew موجود؛ إذا لا استخدم ./gradlew wrapper أو ./gradlew assembleDebug
           chmod +x ./gradlew || true
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon
 
-      - name: Upload APK artifact
-        if: always()
+      - name: Upload built APK(s)
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
+          name: android-apks
           path: |
-            android/app/build/outputs/apk/debug/app-debug.apk
-            platforms/android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/**/*.apk
+            android/**/build/outputs/**/*.apk
