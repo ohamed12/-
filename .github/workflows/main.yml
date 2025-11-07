@@ -6,9 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  # مكان مؤقت لسكواد الـ SDK داخل الـ runner
   ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
-  # تأكد أن اسم تطبيقك يبدو كما تريد:
   APP_NAME: "My Style"
   APP_ID: "com.ohamed12.mystyle"
   WEB_DIR: "dist"
@@ -26,7 +24,7 @@ jobs:
         with:
           node-version: 18
 
-      - name: Setup Java 17 (Temurin)
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -36,73 +34,47 @@ jobs:
         run: |
           npm ci || npm install
 
-      - name: Build web assets (ensure your project creates the $WEB_DIR)
+      - name: Build web assets
         run: |
-          # إذا عندك سكربت build في package.json يستعمله:
           if npm run | grep -q " build"; then
             npm run build
           else
-            # لو ما عندك، نضمن مجلد dist واحد بسيط حتى لا يفشل الworkflow
             mkdir -p $WEB_DIR
-            echo "<!doctype html><meta charset='utf-8'><title>My Style</title><h1>My Style</h1>" > $WEB_DIR/index.html
+            echo "<!doctype html><html><meta charset='utf-8'><title>My Style</title><body><h1>Welcome to My Style 💅</h1></body></html>" > $WEB_DIR/index.html
           fi
-        shell: bash
 
-      - name: Install Android command-line tools & SDK (platform 35 + build-tools)
+      - name: Install Android SDK
         run: |
-          set -e
           mkdir -p "$ANDROID_SDK_ROOT"
           cd "$ANDROID_SDK_ROOT"
-          # حمل commandline tools (نسخة متوافقة)
-          CLT_ZIP=commandlinetools.zip
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O $CLT_ZIP
-          unzip -q $CLT_ZIP -d cmdline-tools-tmp
-          rm -f $CLT_ZIP
-          mkdir -p cmdline-tools/latest
-          mv cmdline-tools-tmp/* cmdline-tools/latest/
-          rm -rf cmdline-tools-tmp
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
-          yes | sdkmanager --licenses || true
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
+          unzip -q tools.zip -d cmdline-tools
+          rm tools.zip
+          mv cmdline-tools cmdline-tools/latest
+          export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin
+          yes | sdkmanager --licenses
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-        shell: bash
 
-      - name: Ensure capacitor & android platform installed
+      - name: Prepare Android project
         run: |
-          # ثبت capacitor cli لو مش موجود
-          npm install -g @capacitor/cli --no-fund --no-audit || true
-          # ثبت الحزم المطلوبة في المشروع (لو لم تكن موجودة)
-          npm install @capacitor/core @capacitor/android --no-fund --no-audit || true
-          # init إذا لم يكن سبق تهيئته
-          npx cap ls || npx cap init "$APP_NAME" $APP_ID --web-dir="$WEB_DIR"
-          # أضف منصة أندرويد لو لم تضف
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
-          # نسخ ملفات الويب إلى مشروع Android
-          npx cap copy android
-        shell: bash
+          npm install -g @capacitor/cli
+          npm install @capacitor/core @capacitor/android --save
+          npx cap init "$APP_NAME" "$APP_ID" --web-dir="$WEB_DIR" || true
+          npx cap add android || true
+          npx cap sync android
 
-      - name: Fix gradle java home (force Gradle to use the runner's Java)
+      - name: Fix Gradle config
         run: |
-          # يكتب org.gradle.java.home إلى gradle.properties داخل مجلد android
-          mkdir -p android
           echo "org.gradle.java.home=${JAVA_HOME}" >> android/gradle.properties
-        shell: bash
 
-      - name: Build Android APK (assembleDebug)
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-          PATH: ${{ env.ANDROID_SDK_ROOT }}/cmdline-tools/latest/bin:${PATH}
+      - name: Build APK
         run: |
-          set -e
           cd android
-          chmod +x ./gradlew || true
+          chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
-        shell: bash
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MyStyle-apk
+          name: MyStyle-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
