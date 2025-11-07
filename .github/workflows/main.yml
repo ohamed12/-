@@ -1,4 +1,4 @@
-name: Build Android App
+name: Build Android App (with SDK tools)
 
 on:
   push:
@@ -6,38 +6,29 @@ on:
   workflow_dispatch:
 
 env:
-  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk   # نثبت SDK هنا داخل كل تشغيل
 
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      # 1️⃣ جلب الكود من المستودع
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ إعداد Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: عرض معلومات Java
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
-
-      # 3️⃣ إعداد Node.js (بدون كاش)
-      - name: Setup Node.js
+      - name: Setup Node.js 18
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      # 4️⃣ تثبيت التبعيات npm
-      - name: تثبيت التبعيات
+      - name: Install npm dependencies
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -45,63 +36,87 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
-      # 5️⃣ بناء ملفات الويب أو نسخها من www
-      - name: إنشاء ملفات الويب (dist)
+      - name: Build web assets (if project has build script)
         run: |
-          if [ -f package.json ] && grep -q "\"build\"" package.json; then
+          if [ -f package.json ] && grep -q '"build"' package.json; then
             npm run build
           fi
-
-          if [ ! -d "./dist" ]; then
-            if [ -d "./www" ]; then
-              cp -a www dist
-            else
-              echo "❌ لم يتم العثور على مجلد dist أو www"
-              exit 1
-            fi
+          # If no dist but there's www, copy it
+          if [ ! -d ./dist ] && [ -d ./www ]; then
+            cp -a www dist
           fi
 
-      # 6️⃣ تثبيت Android SDK والرخص
-      - name: تثبيت Android SDK والمكونات
+      # ----- Install Android commandlinetools and SDK components -----
+      - name: Install Android commandline tools
+        run: |
+          set -e
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" "${ANDROID_SDK_ROOT}/platform-tools"
+          cd "${ANDROID_SDK_ROOT}"
+          # download latest commandline tools (link may update in future)
+          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d cmdline-tools
+          # some zips extract into "cmdline-tools" or "tools", normalize to 'latest'
+          if [ -d cmdline-tools/cmdline-tools ]; then
+            mv cmdline-tools/cmdline-tools cmdline-tools/latest
+          else
+            mv cmdline-tools cmdline-tools/latest || true
+          fi
+          rm -f cmdline-tools.zip
+
+      - name: Add Android SDK tools to PATH
+        run: |
+          echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "${ANDROID_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
+          echo "${ANDROID_SDK_ROOT}/tools/bin" >> $GITHUB_PATH || true
+          # ensure sdkmanager is runnable
+          ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" || true
+
+      - name: Install Android SDK components (platform-tools, build-tools, platforms)
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          yes | sdkmanager --sdk_root=${ANDROID_SDK_ROOT} --licenses || true
-          sdkmanager --sdk_root=${ANDROID_SDK_ROOT} "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          set -e
+          # wait a little to ensure PATH updated
+          sdkmanager --version
+          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses
+          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      # 7️⃣ إضافة أدوات SDK إلى PATH
-      - name: إضافة SDK إلى PATH
+      - name: Verify Android platform installed
         run: |
-          echo "${ANDROID_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
-          echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH || true
+          echo "SDK root: ${ANDROID_SDK_ROOT}"
+          ls -la "${ANDROID_SDK_ROOT}/platforms" || true
+          adb --version || true
 
-      # 8️⃣ تأكيد وجود منصة أندرويد
-      - name: تأكيد وجود منصة Android
+      # ----- Capacitor/Cordova Android sync (optional) -----
+      - name: Add / Sync Android (Capacitor)
+        if: exists('capacitor.config.json') || exists('capacitor.config.ts')
         run: |
-          if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ]; then
-            npm install @capacitor/android --no-audit --no-fund
-            npx cap add android || true
-            npx cap sync android || true
-          fi
+          npm install @capacitor/android --no-audit --no-fund || true
+          npx cap add android || true
+          npx cap sync android || true
 
-      # 9️⃣ بناء ملف APK
-      - name: إنشاء APK
+      # ----- Build APK -----
+      - name: Build APK (Gradle)
         run: |
           set -e
+          # find android project folder
           if [ -d "android" ]; then
             cd android
           elif [ -d "platforms/android" ]; then
             cd platforms/android
+          elif [ -d "app" ] && [ -f "gradlew" ]; then
+            # already in android-like tree
+            :
           else
-            echo "❌ لم يتم العثور على مجلد android"
+            echo "❌ لم يتم العثور على مشروع Android (android/ أو platforms/android)."
             exit 1
           fi
 
           chmod +x ./gradlew || true
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      # 🔟 رفع ملف الـ APK
-      - name: رفع ملف APK
+      - name: Upload APK artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
