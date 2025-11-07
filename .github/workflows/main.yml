@@ -1,4 +1,4 @@
-name: Android Build (Capacitor/Cordova)
+name: Build Android (Capacitor / Cordova / Gradle)
 
 on:
   push:
@@ -6,11 +6,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -24,7 +25,7 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install repo dependencies (use lockfile if present)
+      - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -32,49 +33,77 @@ jobs:
             npm install
           fi
 
-      - name: Build web assets (if any)
+      - name: Build web assets (if script exists)
         run: |
-          if [ -f package.json ]; then
-            npm run build || echo "no build or build failed but continuing"
+          if grep -q "\"build\"" package.json >/dev/null 2>&1; then
+            npm run build || echo "build script failed or not necessary"
+          else
+            echo "no build script"
           fi
 
-      - name: Set ANDROID_SDK_ROOT to runner temp (safe)
+      - name: Set ANDROID_SDK_ROOT in env
         run: echo "ANDROID_SDK_ROOT=$RUNNER_TEMP/android-sdk" >> $GITHUB_ENV
 
-      - name: Install Android command-line tools & SDK components
+      - name: Install Android commandline tools & SDK components
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT"
           cd "$ANDROID_SDK_ROOT"
 
-          # Download commandline tools (Linux)
-          CLI_ZIP=commandlinetools-linux.zip
+          CLI_ZIP=cmdline-tools.zip
           curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o $CLI_ZIP
-
-          # unzip
-          unzip -q $CLI_ZIP -d cmdline-tools-temp
-          # Move to expected layout: cmdline-tools/latest
+          unzip -q $CLI_ZIP -d cmdline-tools-temp || (echo "unzip failed" && exit 1)
           mkdir -p cmdline-tools
           mv cmdline-tools-temp/cmdline-tools cmdline-tools/latest || true
 
-          # Add sdkmanager to PATH for following steps
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-          # Accept licenses & install basic components (platform-tools, platform, build-tools)
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Ensure Android platform exists (Capacitor / Cordova) and prepare project
+        run: |
+          set -e
+          # If android dir exists already, keep it
+          if [ -d "./android" ]; then
+            echo "android directory exists, skipping add."
+          else
+            echo "android directory NOT found. Trying to add platform..."
+
+            # If Capacitor detected in node_modules or package.json deps, use Capacitor
+            if [ -d "node_modules/@capacitor/core" ] || grep -q "\"@capacitor/core\"" package.json >/dev/null 2>&1; then
+              echo "Detected Capacitor. Adding Android platform..."
+              npx cap add android || npx cap sync android || (echo "Capacitor add/sync failed" && exit 1)
+
+            # Else if Cordova config.xml exists, try Cordova
+            elif [ -f "config.xml" ] || grep -q "\"cordova\"" package.json >/dev/null 2>&1; then
+              echo "Detected Cordova. Adding Android platform..."
+              npx cordova platform add android || ionic cordova platform add android || (echo "Cordova add failed" && exit 1)
+
+            else
+              echo "No Capacitor or Cordova detected and no android dir. Cannot continue." >&2
+              exit 1
+            fi
+          fi
 
       - name: Show Android env (debug)
         run: |
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_SDK_ROOT" || true
+          ls -la || true
+          ls -la android || true
 
       - name: Build Android APK (Gradle)
-        working-directory: android
         run: |
-          chmod +x ./gradlew || true
-          ./gradlew assembleDebug --no-daemon
+          set -e
+          if [ -d "android" ]; then
+            cd android
+            chmod +x ./gradlew || true
+            ./gradlew assembleDebug --no-daemon
+          else
+            echo "android directory missing; cannot run gradle build" >&2
+            exit 1
+          fi
 
       - name: Upload APK artifact
         if: always()
