@@ -27,6 +27,7 @@ jobs:
       - name: Install npm dependencies
         run: |
           npm ci || npm install
+        shell: bash
 
       - name: Build web assets (create minimal dist if none)
         run: |
@@ -36,26 +37,52 @@ jobs:
             mkdir -p dist
             echo "<!doctype html><html><meta charset='utf-8'><title>My Style</title><body><h1>My Style</h1></body></html>" > dist/index.html
           fi
+        shell: bash
 
-      - name: Install Android SDK commandline tools and platforms
+      - name: Install Android commandline tools and platforms
         run: |
-          ANDROID_SDK_ROOT="${{ runner.temp }}/android-sdk"
+          set -e
+          # use runner temp to avoid permission problems
+          ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
           mkdir -p "$ANDROID_SDK_ROOT"
           cd "$ANDROID_SDK_ROOT"
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O tools.zip
-          unzip -q tools.zip -d cmdline-tools
-          rm tools.zip
-          # move to expected path
+
+          # download commandline tools
+          curl -sS -o cmdline.zip "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+          unzip -q cmdline.zip -d cmdline-tools
+          rm cmdline.zip
+
+          # move to expected layout: cmdline-tools/latest/...
           mkdir -p cmdline-tools/latest
-          mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
-          export PATH="$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools"
-          yes | sdkmanager --licenses
-          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          # some zips extract as "cmdline-tools/bin" or "tools/"; try both
+          if [ -d cmdline-tools/cmdline-tools ]; then
+            mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
+          elif [ -d cmdline-tools/tools ]; then
+            mv cmdline-tools/tools/* cmdline-tools/latest/ || true
+          else
+            mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
+          fi
+
+          # export PATH for this shell (important: same step)
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+
+          # quick sanity check
+          echo "SDK root: $ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" || true
+
+          # use sdkmanager via full path to avoid PATH issues
+          SDKMAN="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          chmod +x "$SDKMAN" || true
+          "$SDKMAN" --version
+
+          # accept licenses and install essential packages
+          yes | "$SDKMAN" --licenses || true
+          "$SDKMAN" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
         shell: bash
 
       - name: Prepare Capacitor Android project
         run: |
-          # اسم التطبيق والمعرف (عدّل إذا شئت)
+          set -e
           APP_NAME="My Style"
           APP_ID="com.ohamed12.mystyle"
           WEB_DIR="dist"
@@ -63,14 +90,17 @@ jobs:
           npm install -g @capacitor/cli
           npm install @capacitor/core @capacitor/android --save
 
-          # تهيئة/مزامنة المشروع (إذا لم يكن موجوداً)
+          # init only if not present (ignore errors)
           npx cap init "$APP_NAME" "$APP_ID" --web-dir="$WEB_DIR" || true
           npx cap add android || true
           npx cap sync android
         shell: bash
 
-      - name: Ensure gradlew is executable and build debug APK
+      - name: Build debug APK with Gradle
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
+          set -e
           cd android
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
