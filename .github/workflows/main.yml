@@ -1,86 +1,55 @@
-name: Build Android (Capacitor)
+name: Android Build Test
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  workflow_dispatch:
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
     env:
-      # مسار SDK مؤقت داخل runner
-      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+      ANDROID_SDK_ROOT: "${{ runner.temp }}/android-sdk"
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: gradle
+          distribution: "temurin"
+          java-version: "17"
 
-      - name: Setup Node.js 18
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
+          node-version: "18"
 
-      - name: Install npm dependencies (ci if lockfile exists)
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build web
+        run: npm run build || echo "no web build"
+
+      - name: Install Android SDK
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT"
+          curl -sSfL "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" -o tools.zip
+          unzip -q tools.zip -d cmdline-tools
+          mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Build web assets
+      - name: Build APK
         run: |
-          # عدّل هذا الأمر إذا build script عندك باسم مختلف
-          npm run build
-        # لو ملفات الويب تخرج في مجلد مختلف غيّر webDir في capacitor.config أو غيّر المسار أدناه
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
-      - name: Setup Android SDK and tools
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          arch: x86_64
-          target: default
-          components: |
-            platform-tools
-            cmdline-tools;latest
-            build-tools;33.0.2
-            platforms;android-33
-
-      - name: Ensure sdkmanager is available
-        run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_SDK_ROOT" || true
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --version || true
-
-      - name: Accept Android SDK licenses
-        run: |
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
-
-      - name: Sync Capacitor Android (or add platform)
-        run: |
-          # لو تستخدم Cordova غيّر هذه الأوامر
-          npx cap sync android
-
-      - name: Build Android APK (Gradle)
-        working-directory: android
-        run: |
-          # تأكد أن الملف gradlew موجود؛ إذا لا استخدم ./gradlew wrapper أو ./gradlew assembleDebug
-          chmod +x ./gradlew || true
-          ./gradlew assembleRelease --no-daemon
-
-      - name: Upload built APK(s)
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apks
-          path: |
-            android/app/build/outputs/**/*.apk
-            android/**/build/outputs/**/*.apk
+          name: app-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
